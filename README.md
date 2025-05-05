@@ -1,3 +1,3 @@
 # test-release
 
-Current release: v1.4.4
+Current release: v1.5.2
