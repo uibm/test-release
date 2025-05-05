@@ -1,3 +1,3 @@
 # test-release
 
-Release v1.2.0
+Release v1.3.0
