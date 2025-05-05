@@ -1,3 +1,3 @@
 # test-release
 
-Current release: vX.Y.Z
+Current release: v1.3.1
