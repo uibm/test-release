@@ -1,0 +1,83 @@
+name: Automated Releases
+
+on:
+  schedule:
+    - cron: '0 * * * *' # Every hour
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "uibm"
+          git config --global user.email "ujjwal.kumar1@ibm.com"
+
+      - name: Fetch all tags
+        run: git fetch --tags
+
+      - name: Determine latest version
+        id: version
+        run: |
+          latest_tag=$(git tag --sort=-v:refname | head -n1)
+          echo "Latest tag: $latest_tag"
+
+          # Extract major, minor, patch
+          IFS='.' read -r major minor patch <<< "${latest_tag#v}"
+
+          # Check if it's a patch or minor release hour
+          current_hour=$(date +%H)
+          if (( current_hour % 4 == 0 )); then
+            # Patch release of previous minor
+            prev_minor=$((minor - 1))
+            base_tag="v${major}.${prev_minor}.0"
+            latest_patch=$(git tag --sort=-v:refname | grep "^v${major}.${prev_minor}\." | head -n1)
+            IFS='.' read -r _ _ base_patch <<< "${latest_patch#v}"
+            next_patch=$((base_patch + 1))
+            next_tag="v${major}.${prev_minor}.${next_patch}"
+          else
+            # Patch release of new minor
+            new_tag="v${major}.$minor.$((patch + 1))"
+            if (( patch == 3 )); then
+              minor=$((minor + 1))
+              patch=0
+              new_tag="v${major}.${minor}.0"
+            fi
+            next_tag="$new_tag"
+          fi
+
+          echo "NEXT_TAG=$next_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create release commit
+        run: |
+          echo "Release ${GITHUB_OUTPUT_NEXT_TAG}" >> release.log
+          git add release.log
+          git commit -m "chore: release ${{ steps.version.outputs.NEXT_TAG }}" || echo "No changes"
+
+      - name: Tag release
+        run: |
+          git tag ${{ steps.version.outputs.NEXT_TAG }}
+          git push origin ${{ steps.version.outputs.NEXT_TAG }}
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          previous_tag=$(git tag --sort=-v:refname | grep -B1 ${{ steps.version.outputs.NEXT_TAG }} | head -n1)
+          changelog=$(git log "$previous_tag"..HEAD --pretty=format:"- %s" --no-merges)
+          echo "$changelog" > changelog.txt
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$changelog" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.NEXT_TAG }}
+          name: Release ${{ steps.version.outputs.NEXT_TAG }}
+          body: |
+            ## Changes
+            ${{ steps.changelog.outputs.CHANGELOG }}
