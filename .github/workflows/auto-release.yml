@@ -2,25 +2,31 @@ name: Automated Releases
 
 on:
   schedule:
-    - cron: '0 * * * *' # Every hour
+    - cron: '0 * * * *' # every hour
   workflow_dispatch:
+
+permissions:
+  contents: write # needed for pushing commits, tags, and releases
 
 jobs:
   release:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # fetch all tags and history
 
       - name: Set up Git
         run: |
-          git config --global user.name "uibm"
-          git config --global user.email "ujjwal.kumar1@ibm.com"
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
 
       - name: Fetch all tags
         run: git fetch --tags
 
-      - name: Determine latest version
+      - name: Determine next version
         id: version
         run: |
           latest_tag=$(git tag --sort=-v:refname | head -n1)
@@ -29,55 +35,91 @@ jobs:
           # Extract major, minor, patch
           IFS='.' read -r major minor patch <<< "${latest_tag#v}"
 
-          # Check if it's a patch or minor release hour
           current_hour=$(date +%H)
           if (( current_hour % 4 == 0 )); then
-            # Patch release of previous minor
+            # Patch previous minor version
             prev_minor=$((minor - 1))
-            base_tag="v${major}.${prev_minor}.0"
-            latest_patch=$(git tag --sort=-v:refname | grep "^v${major}.${prev_minor}\." | head -n1)
-            IFS='.' read -r _ _ base_patch <<< "${latest_patch#v}"
-            next_patch=$((base_patch + 1))
+            base_tags=$(git tag --sort=-v:refname | grep "^v${major}\.${prev_minor}\.")
+            if [ -z "$base_tags" ]; then
+              echo "No previous minor version found. Skipping."
+              echo "SKIP=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            last_patch=$(echo "$base_tags" | head -n1 | awk -F. '{print $3}')
+            next_patch=$((last_patch + 1))
             next_tag="v${major}.${prev_minor}.${next_patch}"
           else
-            # Patch release of new minor
-            new_tag="v${major}.$minor.$((patch + 1))"
+            # Patch current minor
             if (( patch == 3 )); then
               minor=$((minor + 1))
               patch=0
-              new_tag="v${major}.${minor}.0"
+            else
+              patch=$((patch + 1))
             fi
-            next_tag="$new_tag"
+            next_tag="v${major}.${minor}.${patch}"
           fi
 
           echo "NEXT_TAG=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "next_tag=$next_tag"
+          echo "SKIP=false" >> "$GITHUB_OUTPUT"
 
-      - name: Create release commit
+      - name: Skip if no previous minor version
+        if: steps.version.outputs.SKIP == 'true'
+        run: echo "Skipping release this hour."
+
+      - name: Update README with current release
+        if: steps.version.outputs.SKIP != 'true'
         run: |
-          echo "Release ${GITHUB_OUTPUT_NEXT_TAG}" >> release.log
-          git add release.log
-          git commit -m "chore: release ${{ steps.version.outputs.NEXT_TAG }}" || echo "No changes"
+          sed -i "s/^Current release: .*/Current release: ${{ steps.version.outputs.NEXT_TAG }}/" README.md
 
-      - name: Tag release
-        run: |
-          git tag ${{ steps.version.outputs.NEXT_TAG }}
-          git push origin ${{ steps.version.outputs.NEXT_TAG }}
-
-      - name: Generate changelog
+      - name: Create changelog
+        if: steps.version.outputs.SKIP != 'true'
         id: changelog
         run: |
           previous_tag=$(git tag --sort=-v:refname | grep -B1 ${{ steps.version.outputs.NEXT_TAG }} | head -n1)
-          changelog=$(git log "$previous_tag"..HEAD --pretty=format:"- %s" --no-merges)
+          if [ -z "$previous_tag" ]; then
+            previous_tag=$(git tag --sort=-v:refname | tail -n2 | head -n1)
+          fi
+          echo "Previous tag: $previous_tag"
+          changelog=$(git log "$previous_tag"..HEAD --pretty=format:"- %s" --no-merges || echo "No changes")
           echo "$changelog" > changelog.txt
           echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
           echo "$changelog" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      - name: Commit README update
+        if: steps.version.outputs.SKIP != 'true'
+        run: |
+          git add README.md
+          git commit -m "docs: update README to ${{ steps.version.outputs.NEXT_TAG }}" || echo "No README update needed"
+
+      - name: Create release commit
+        if: steps.version.outputs.SKIP != 'true'
+        run: |
+          echo "Release ${{ steps.version.outputs.NEXT_TAG }}" >> release.log
+          git add release.log
+          git commit -m "chore: release ${{ steps.version.outputs.NEXT_TAG }}" || echo "No release log update needed"
+
+      - name: Tag new release
+        if: steps.version.outputs.SKIP != 'true'
+        run: |
+          git tag ${{ steps.version.outputs.NEXT_TAG }}
+
+      - name: Push tag using GITHUB_TOKEN
+        if: steps.version.outputs.SKIP != 'true'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git remote set-url origin https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git
+          git push origin HEAD
+          git push origin ${{ steps.version.outputs.NEXT_TAG }}
+
       - name: Create GitHub release
+        if: steps.version.outputs.SKIP != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.NEXT_TAG }}
           name: Release ${{ steps.version.outputs.NEXT_TAG }}
           body: |
-            ## Changes
+            ## Changelog
             ${{ steps.changelog.outputs.CHANGELOG }}
