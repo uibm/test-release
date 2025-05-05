@@ -20,8 +20,8 @@ jobs:
 
       - name: Set up Git
         run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
+          git config --global user.name "Ujjwal Kumar"
+          git config --global user.email "ujjwal.kumar1@ibm.com"
 
       - name: Fetch all tags
         run: git fetch --tags
